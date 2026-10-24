@@ -12,7 +12,7 @@ export default class Style {
         linkProperties(this, this.instance, [
             'options', 'datamanager', 'columnmanager',
             'header', 'footer', 'bodyScrollable', 'datatableWrapper',
-            'getColumn', 'bodyRenderer'
+            'getColumn', 'bodyRenderer', 'cellmanager'
         ]);
 
         this.scopeClass = 'dt-instance-' + instance.constructor.instances;
@@ -193,7 +193,8 @@ export default class Style {
             }
         });
 
-        // set initial width as naturally calculated by table's first row
+        // The first row is in the DOM, so its width also includes extras
+        // like tree toggles and indentation
         $.each('.dt-row-0 .dt-cell', this.bodyScrollable).map($cell => {
             const {
                 colIndex
@@ -204,10 +205,66 @@ export default class Style {
 
             if (typeof naturalWidth === 'number' && naturalWidth >= column.naturalWidth) {
                 column.naturalWidth = naturalWidth;
-            } else {
-                column.naturalWidth = column.naturalWidth;
             }
         });
+
+        // Only the visible rows are in the DOM (virtual scroll),
+        // so measure the longest value of each column from the data
+        this.datamanager.getColumns().forEach(column => {
+            if (column.width || ['_rowIndex', '_checkbox'].includes(column.id)) return;
+
+            const contentWidth = this.getColumnContentWidth(column.colIndex);
+            if (contentWidth > column.naturalWidth) {
+                column.naturalWidth = contentWidth;
+            }
+        });
+    }
+
+    getColumnContentWidth(colIndex) {
+        const cellText = this.getLongestCellText(colIndex);
+        if (!cellText) return 0;
+
+        const $cellContent = this.bodyScrollable.querySelector('.dt-cell__content');
+        if (!$cellContent) return 0;
+
+        const {
+            borderLeftWidth,
+            borderRightWidth,
+            paddingLeft,
+            paddingRight
+        } = $.getStyle($cellContent);
+
+        const padding = [borderLeftWidth, borderRightWidth, paddingLeft, paddingRight]
+            .map(parseFloat)
+            .reduce((sum, val) => sum + val);
+
+        return $.measureTextWidth(cellText, this.bodyScrollable) + padding;
+    }
+
+    getLongestCellText(colIndex) {
+        const rows = this.bodyRenderer.visibleRows || [];
+        let longestCell = null;
+        let longestLength = -1;
+
+        rows.forEach(row => {
+            const cell = row[colIndex];
+            if (!cell) return;
+
+            const content = cell.content == null ? '' : cell.content;
+            const length = String(content).length;
+            if (length > longestLength) {
+                longestCell = cell;
+                longestLength = length;
+            }
+        });
+
+        if (!longestCell) return '';
+
+        // Render the cell so that column formatters are applied
+        const $div = document.createElement('div');
+        $div.innerHTML = this.cellmanager.getCellHTML(longestCell);
+        const $content = $div.querySelector('.dt-cell__content');
+        return $content ? $content.textContent : '';
     }
 
     setupColumnWidth() {
