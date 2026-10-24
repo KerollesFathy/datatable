@@ -12,7 +12,7 @@ export default class Style {
         linkProperties(this, this.instance, [
             'options', 'datamanager', 'columnmanager',
             'header', 'footer', 'bodyScrollable', 'datatableWrapper',
-            'getColumn', 'bodyRenderer', 'cellmanager'
+            'getColumn', 'bodyRenderer'
         ]);
 
         this.scopeClass = 'dt-instance-' + instance.constructor.instances;
@@ -221,11 +221,13 @@ export default class Style {
     }
 
     getColumnContentWidth(colIndex) {
-        const cellText = this.getLongestCellText(colIndex);
-        if (!cellText) return 0;
-
         const $cellContent = this.bodyScrollable.querySelector('.dt-cell__content');
         if (!$cellContent) return 0;
+
+        const htmls = this.getWidestCellHTMLs(colIndex, $cellContent);
+        if (!htmls.length) return 0;
+
+        const contentWidth = Math.max(...$.measureHTMLWidths(htmls, this.bodyScrollable));
 
         const {
             borderLeftWidth,
@@ -238,33 +240,77 @@ export default class Style {
             .map(parseFloat)
             .reduce((sum, val) => sum + val);
 
-        return $.measureTextWidth(cellText, this.bodyScrollable) + padding;
+        return contentWidth + padding;
     }
 
-    getLongestCellText(colIndex) {
+    // Measuring every value in the DOM is slow for large data, so a canvas
+    // picks the widest few texts and only those are measured in the DOM
+    getWidestCellHTMLs(colIndex, $cellContent, count = 10) {
+        const values = this.getColumnValues(colIndex);
+        if (values.length <= count) return values.map(value => value.html);
+
+        const context = this.getTextMeasureContext($cellContent);
+        return values
+            .map(value => ({ html: value.html, width: context.measureText(value.text).width }))
+            .sort((a, b) => b.width - a.width)
+            .slice(0, count)
+            .map(value => value.html);
+    }
+
+    getTextMeasureContext($cellContent) {
+        if (!this.textMeasureContext) {
+            this.textMeasureContext = document.createElement('canvas').getContext('2d');
+        }
+
+        const { fontStyle, fontWeight, fontSize, fontFamily } = $.getStyle($cellContent);
+        this.textMeasureContext.font = `${fontStyle} ${fontWeight} ${fontSize} ${fontFamily}`;
+        return this.textMeasureContext;
+    }
+
+    // The unique values of a column, as the HTML and the text that the cells show
+    getColumnValues(colIndex) {
         const rows = this.bodyRenderer.visibleRows || [];
-        let longestCell = null;
-        let longestLength = -1;
+        const values = new Map();
 
         rows.forEach(row => {
             const cell = row[colIndex];
             if (!cell) return;
 
-            const content = cell.content == null ? '' : cell.content;
-            const length = String(content).length;
-            if (length > longestLength) {
-                longestCell = cell;
-                longestLength = length;
+            const html = this.getCellContentHTML(cell);
+            if (html && !values.has(html)) {
+                values.set(html, { html, text: this.getTextFromHTML(html) });
             }
         });
 
-        if (!longestCell) return '';
+        return Array.from(values.values());
+    }
 
-        // Render the cell so that column formatters are applied
-        const $div = document.createElement('div');
-        $div.innerHTML = this.cellmanager.getCellHTML(longestCell);
-        const $content = $div.querySelector('.dt-cell__content');
-        return $content ? $content.textContent : '';
+    // The cell content with the column formatter applied
+    getCellContentHTML(cell) {
+        const formatter = cell.format || (cell.column && cell.column.format);
+        let html = cell.content;
+
+        if (formatter) {
+            html = cell.html;
+            if (html == null) {
+                const row = this.datamanager.getRow(cell.rowIndex);
+                const data = this.datamanager.getData(cell.rowIndex);
+                html = formatter(cell.content, row, cell.column, data);
+            }
+        }
+
+        return html == null ? '' : String(html).trim();
+    }
+
+    getTextFromHTML(html) {
+        if (!/[<&]/.test(html)) return html.replace(/\s+/g, ' ');
+
+        // A template element is inert, so images and scripts in the HTML do not load or run
+        if (!this.textParser) {
+            this.textParser = document.createElement('template');
+        }
+        this.textParser.innerHTML = html;
+        return this.textParser.content.textContent.replace(/\s+/g, ' ').trim();
     }
 
     setupColumnWidth() {
